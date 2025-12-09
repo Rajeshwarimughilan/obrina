@@ -1,5 +1,6 @@
 const axios = require('axios');
 const config = require('../../config');
+const { analyzeTextLocal } = require('./sentiment_local_client');
 
 let offlineSentiment = null;
 try{
@@ -70,6 +71,16 @@ function analyzeTextOffline(text){
 async function analyzeText(text){
     if(!text || text.trim().length === 0){
         return { score: 0.5, label: "neutral", source: "empty"};
+    }
+
+    if(process.env.USE_LOCAL_NLP === "true"){
+        try{
+            const res = await analyzeTextLocal(text);
+            return res;
+        }catch(err){
+            console.warn("Local NLP failed, falling back:", err.message || err);
+        }
+
     }
 
     if(config.HUGGINGFACE_API_KEY){
