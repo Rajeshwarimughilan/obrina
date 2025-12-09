@@ -79,3 +79,7 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 "backend/.env" 
+
+.venv 
+backend/.venv 
+
