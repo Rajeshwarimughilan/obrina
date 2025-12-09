@@ -1,0 +1,591 @@
+Quick dev assumptions (so tasks are concrete)
+
+You’ll build a MERN app: React frontend (Vite or CRA), Node + Express backend, MongoDB (Atlas recommended).
+
+Use free external inference/APIs (HuggingFace Inference, Perspective, NewsAPI, Finnhub/Alpha Vantage, CoinGecko).
+
+Keep ML calls off the request path (run them in background jobs, persist results).
+
+Use JWT auth.
+
+Repo layout we’ll follow: project-root/{backend,frontend}.
+
+Task list (0 → 40). Each task: what to do, files/commands, and acceptance criteria.
+Task 0 — Create repo & environment
+
+Create GitHub repo: marketsight
+
+Locally: mkdir marketsight && cd marketsight && git init
+
+Create folders:
+
+mkdir backend frontend
+
+Create README.md with project goal, stack.
+
+Commit initial repo.
+
+Acceptance: Repo exists with backend/ and frontend/ directories and README; first commit on GitHub or local.
+
+Task 1 — Setup backend skeleton
+
+cd backend
+
+npm init -y
+
+Install basics: npm i express mongoose dotenv cors jsonwebtoken bcryptjs
+
+Dev tools: npm i -D nodemon eslint prettier
+
+Create files:
+
+src/index.js (Express server)
+
+src/config/db.js (mongoose connect)
+
+.env.example with variables (MONGO_URI, JWT_SECRET, PORT)
+
+Add npm scripts in package.json: "dev": "nodemon src/index.js"
+
+Acceptance: npm run dev starts server and connects to MongoDB (use local Mongo or Atlas string). Health-check endpoint GET /api/health returns ok.
+
+Task 2 — User auth & models
+
+Create Mongoose User model: src/models/User.js (email, passwordHash, watchlist[], settings, createdAt).
+
+Implement auth routes: src/routes/auth.js with:
+
+POST /api/auth/register → create user (hash password with bcrypt)
+
+POST /api/auth/login → verify + return JWT
+
+Add middleware authMiddleware.js to verify JWT.
+
+Add validation and basic errors handling.
+
+Acceptance: Able to register and login via Postman/curl, returned JWT can call protected test endpoint GET /api/auth/me.
+
+Example curl:
+
+curl -X POST http://localhost:5000/api/auth/register -H "Content-Type: application/json" -d '{"email":"you@example.com","password":"pass1234"}'
+
+Task 3 — Asset & News DB models + basic CRUD
+
+Models:
+
+Asset (symbol, type, name, metadata, lastPrice, lastUpdated)
+
+NewsItem (assetId, publishedAt, source, title, url, text, sentiment, toxicity, relevanceScore, fetchedAt)
+
+Routes:
+
+GET /api/assets (list)
+
+POST /api/assets (add asset)
+
+GET /api/assets/:id (detail)
+
+Add simple seed script scripts/seed.js or POST with curl to add a sample asset.
+
+Acceptance: Create assets and query them. NewsItem collection exists.
+
+Task 4 — External API keys & env variables
+
+Add .env to backend (not committed).
+
+Variables names (in .env.example):
+
+MONGO_URI=
+
+JWT_SECRET=
+
+PORT=5000
+
+FINNHUB_API_KEY= (or ALPHA_VANTAGE)
+
+COINGECKO_API_URL= (CoinGecko is public)
+
+NEWSAPI_KEY=
+
+HUGGINGFACE_API_KEY=
+
+PERSPECTIVE_API_KEY=
+
+Implement src/config/index.js to read env safely.
+
+Acceptance: Backend loads env without error.
+
+Task 5 — Price fetcher (market data)
+
+Write src/services/priceFetcher.js:
+
+For stocks: use Finnhub/AlphaVantage (fetch current price & historical).
+
+For crypto: use CoinGecko /coins/{id}/market_chart for historical prices.
+
+Implement GET /api/assets/:id/price?range=24h endpoint returning price timeseries.
+
+Add simple function to update Asset.lastPrice and lastUpdated.
+
+Acceptance: Endpoint returns JSON timeseries for an asset and lastPrice stored.
+
+Task 6 — News fetcher
+
+Create src/services/newsFetcher.js:
+
+Given asset (symbol + name), call NewsAPI/GNews for recent headlines (query both ticker and company name).
+
+Save returned headlines to NewsItem.
+
+Minimal deduplication by URL.
+
+Expose POST /api/assets/:id/fetch-news to trigger fetch manually.
+
+Acceptance: After calling /fetch-news, NewsItem documents for that asset exist with title + url + publishedAt.
+
+Task 7 — Background scheduling (cron)
+
+Install node-cron (npm i node-cron) or use simple setInterval while developing.
+
+Create src/cron/fetchJobs.js:
+
+Job 1 (every 5–15 min): fetch latest prices and update assets.
+
+Job 2 (every 15–30 min): fetch news per tracked asset and store.
+
+Wire jobs into src/index.js startup.
+
+Acceptance: Jobs run and create/update DB entries automatically (check logs).
+
+Task 8 — Sentiment pipeline (headline-level)
+
+Create src/services/nlp/sentiment.js:
+
+Call HuggingFace Inference API sentiment-analysis or use a small npm sentiment if you want offline.
+
+Output: { score: 0.72, label: "pos" } where score ∈ [0,1] and map to -1..1 if needed.
+
+Update NewsItem documents with sentiment.
+
+Expose POST /api/news/:id/analyze for a single news item (dev/test route).
+
+Acceptance: A NewsItem has sentiment field stored after calling endpoint.
+
+Task 9 — Toxicity detection
+
+Implement src/services/nlp/toxicity.js:
+
+Use Perspective API to compute toxicity for headline and short summary text.
+
+Save toxicity on NewsItem.
+
+Acceptance: NewsItem now has toxicity number (0..1).
+
+Task 10 — Relevance scoring
+
+Implement src/services/relevance.js:
+
+Build asset keywords: name, symbol, CEO names (optional).
+
+Compute overlap with headline & description → relevanceScore ∈ [0,1].
+
+Only mark news with relevanceScore > 0.4 as relevant.
+
+Save relevanceScore to NewsItem.
+
+Acceptance: News items have relevanceScore field; test shows relevant vs. irrelevant.
+
+Task 11 — News pipeline job (glue)
+
+Create src/pipelines/newsPipeline.js:
+
+For each newly fetched NewsItem:
+
+Run sentiment → save
+
+Run toxicity → save
+
+Compute relevance → save
+
+Hook into cron news fetch job to call pipeline asynchronously (queue or simple Promise.all).
+
+Acceptance: Newly fetched news have sentiment, toxicity, and relevanceScore.
+
+Task 12 — Volatility & price returns helper
+
+Create src/services/priceAnalysis.js:
+
+Compute returns over windows (1h, 24h, 7d).
+
+Compute volatility = stddev of returns, normalized by historical max (store a config HISTORICAL_MAX_VOL or compute from long history).
+
+Endpoint: GET /api/assets/:id/volatility?window=24h
+
+Acceptance: Volatility endpoint returns normalized volatility [0,1].
+
+Task 13 — Composite Risk Score function
+
+Implement src/services/risk/scorer.js using the formula from your spec:
+
+Compute avg_sentiment (for recent window, e.g., 24h) among relevant news
+
+Compute avg_toxicity
+
+Compute volatility
+
+Compute news_vol (normalized)
+
+Raw weighted sum → riskScore 0–100
+
+Create POST /api/analysis/:assetId/compute to compute and persist AssetAnalysis document.
+
+Acceptance: Running the compute endpoint creates an AssetAnalysis document with riskScore and explanation array.
+
+Task 14 — Explainability generator
+
+Implement small function that:
+
+Lists top contributing factors with weights (e.g., "High volatility (+30), 5 negative headlines mentioning CEO (+22)")
+
+Use per-factor contributions computed during scoring
+
+Store human-readable explanation inside AssetAnalysis.
+
+Acceptance: AssetAnalysis.explanation contains 3–5 readable items explaining score.
+
+Task 15 — Whitepaper fetch & text extraction
+
+Create src/services/whitepaper/fetcher.js:
+
+If URL is a PDF: download and extract text (use pdf-parse npm).
+
+If URL is a webpage: fetch and extract main content (use node-readability or simple cheerio extraction).
+
+Save WhitepaperReport.fullText.
+
+Acceptance: For a sample whitepaper URL/file, fullText is extracted and stored.
+
+Task 16 — Whitepaper heuristics & summarization
+
+Use HuggingFace summarization to generate a short summary of fullText.
+
+Implement heuristics:
+
+team_present : look for "team", "founder", "about us", names → boolean
+
+tokenomics_redflag : search for words like "pre-mine", "unlock", suspicious vesting percentages
+
+claims_vagueness: fraction of sentences containing marketing words
+
+optional plagiarism_score: basic check by searching for long repeated sentences across web is advanced — skip for MVP
+
+Compute scamScore using formula.
+
+Acceptance: WhitepaperReport saved with summary, scamsignals, and scamScore.
+
+Task 17 — Whitepaper API endpoint
+
+Implement POST /api/whitepaper/analyze which accepts { assetId, url } or file upload (multipart).
+
+Respond with WhitepaperReport.
+
+Acceptance: Uploading/URL returns analysis JSON.
+
+Task 18 — Alerts system
+
+Data model Alert (userId, assetId, type, threshold, channel, active).
+
+Implement engine src/alerts/checker.js:
+
+Run every X minutes (cron)
+
+If AssetAnalysis.riskScore > threshold, create notification (store in DB).
+
+Endpoint to list alerts and mark as read.
+
+Acceptance: When riskScore exceeds threshold, Notification record created and visible in API.
+
+Task 19 — Backend tests & simple QA
+
+Write simple Postman collection or curl scripts for key flows:
+
+Register/login, create asset, fetch news, run analysis, compute risk, analyze whitepaper.
+
+Fix bugs found.
+
+Acceptance: All core endpoints tested manually with Postman/curl.
+
+Task 20 — Setup frontend skeleton
+
+cd frontend → npm create vite@latest (or CRA)
+
+Install: npm i react-router-dom axios dayjs chart.js react-chartjs-2 tailwindcss (or your chosen libs)
+
+Folder structure:
+
+src/pages/{Dashboard,AssetDetail,Whitepaper,Alerts,Auth}
+
+src/components/{Header,AssetCard,NewsItem,Chart,Explainer}
+
+Configure Tailwind (optional) or use basic CSS.
+
+Acceptance: Frontend runs with npm run dev and shows a blank shell header.
+
+Task 21 — Auth on frontend
+
+Implement login/register pages and auth context (store JWT in memory or secure cookie).
+
+Axios instance with interceptor to attach JWT.
+
+Acceptance: Login stores token and lets you access protected endpoints.
+
+Task 22 — Dashboard page
+
+Fetch GET /api/assets and GET /api/analysis/latest for each asset.
+
+Show asset cards: name, lastPrice, price change %, color-coded risk indicator, small sparkline (Chart.js).
+
+Clicking a card navigates to AssetDetail.
+
+Acceptance: Dashboard lists assets with risk scores and price change.
+
+Task 23 — Asset detail page
+
+Big candlestick chart (Chart.js) with historical prices.
+
+Section: top headlines (title, sentiment label, toxicity number, relevance)
+
+Section: risk breakdown (pie or bar showing contribution %)
+
+Section: explain timeline — render explanation entries.
+
+Acceptance: Asset detail shows all required panels and data from backend.
+
+Task 24 — Whitepaper UI
+
+Page to enter URL or upload file.
+
+Show result: summary, scamsignals, scamScore, full text expandable.
+
+Simple color-coded verdict and list of red flags.
+
+Acceptance: Uploading returns and displays WhitepaperReport.
+
+Task 25 — Alerts UI & settings
+
+Page to view notifications and configure thresholds.
+
+Allow creating alerts for asset with threshold.
+
+Acceptance: Alerts show when backend created a notification; user can manage thresholds.
+
+Task 26 — Polishing & UX microcopy
+
+Add microcopy: “Not financial advice”, data freshness timestamps, model confidence values.
+
+Add loading states and error handling for slow ML calls.
+
+Acceptance: UI stable and user-friendly.
+
+Task 27 — Caching & rate-limit handling
+
+On backend, implement caching for external API responses (in-memory or Redis later).
+
+Batch requests when possible.
+
+Add exponential backoff for failed external API calls.
+
+Acceptance: No immediate 429 crashes during small scale load.
+
+Task 28 — Logging & Monitoring
+
+Add basic logs for errors (use winston or console in dev).
+
+Persist error logs to file for debugging.
+
+Acceptance: You can see and find errors easily from logs.
+
+Task 29 — Deploy backend (Heroku/Render/DigitalOcean)
+
+Prepare Procfile / start script.
+
+Ensure env vars configured in hosting service.
+
+SSL & CORS configured for frontend host.
+
+Acceptance: Backend is reachable at public URL and endpoints work.
+
+Task 30 — Deploy frontend (Vercel/Netlify)
+
+Build command npm run build
+
+Set env or proxy to backend.
+
+Ensure secure hosting.
+
+Acceptance: Frontend live, calls backend, and pages load.
+
+Task 31 — Final end-to-end test
+
+Sign up, add 2 assets (1 stock, 1 crypto)
+
+Wait for cron to fetch prices + news (or trigger endpoints manually)
+
+Run analysis + whitepaper analysis for crypto
+
+Validate dashboards, explanations, alerts.
+
+Acceptance: E2E flow works end-to-end.
+
+Task 32 — Add small unit/integration tests (optional)
+
+Add Jest or similar for critical functions: risk scoring, relevance, whitepaper heuristics.
+
+Acceptance: Tests run locally and pass.
+
+Task 33 — Security review
+
+Ensure JWTs, CORS, API keys not exposed.
+
+Validate and sanitize all inputs.
+
+Rate-limit public endpoints if used by others.
+
+Acceptance: No secrets in frontend or Git history.
+
+Task 34 — Readme & docs
+
+Update README with run instructions, env vars, and API contract (brief).
+
+Add Postman collection or sample curl commands.
+
+Acceptance: Anyone can clone and run locally by following README.
+
+Task 35 — UX improvements (iterate)
+
+Add search for assets in dashboard.
+
+Allow manual refresh of analysis.
+
+Add bookmarking/notes per asset.
+
+Acceptance: Improved usability.
+
+Task 36 — Replace external APIs with local models (if you want to learn ML)
+
+Build a Python microservice (FastAPI) that runs HuggingFace transformers locally or via ONNX.
+
+Replace HuggingFace Inference calls with internal endpoints.
+
+Acceptance: ML responses similar and latency acceptable.
+
+Task 37 — Extra: on-chain signals (optional)
+
+Integrate Glassnode (paid) or public on-chain metrics for crypto (volume, active addresses).
+
+Add these to risk scoring.
+
+Acceptance: Risk score now also references on-chain data.
+
+Task 38 — Documentation & presentation (for a project/demo)
+
+Prepare slides showing architecture, key demo flows, and technical choices.
+
+Acceptance: You can demo an asset being analyzed live and explain the scoring.
+
+Task 39 — Prepare interview / project notes
+
+Write 1–2 pages describing the core algorithms and why you chose them.
+
+Include limitations and future work.
+
+Acceptance: Concise doc ready for project report.
+
+Task 40 — Celebrate + next steps
+
+Tag release, push final commit, create a demo video (30–120s).
+
+Think about adding account emails, webhooks for alert delivery.
+
+Helpful file & folder names (quick reference)
+backend/
+  src/
+    index.js
+    config/
+      db.js
+      index.js
+    models/
+      User.js
+      Asset.js
+      NewsItem.js
+      AssetAnalysis.js
+      WhitepaperReport.js
+    routes/
+      auth.js
+      assets.js
+      news.js
+      analysis.js
+      whitepaper.js
+      alerts.js
+    services/
+      priceFetcher.js
+      newsFetcher.js
+      nlp/
+        sentiment.js
+        toxicity.js
+      whitepaper/
+        fetcher.js
+        analyzer.js
+    cron/
+      jobs.js
+frontend/
+  src/
+    pages/
+      Dashboard.jsx
+      AssetDetail.jsx
+      Whitepaper.jsx
+      Alerts.jsx
+      Auth.jsx
+    components/
+      AssetCard.jsx
+      NewsItem.jsx
+      Chart.jsx
+      Explainer.jsx
+
+Tips & gotchas (do these as you go)
+
+Never put API keys in frontend or commit .env. Use .env.example.
+
+For ML calls, don’t call them synchronously on page load — run them in the background and display previous cached results with "last updated" stamps.
+
+For relevance, build a small keyword list per asset (ticker, full company name, shortname, CEO). Avoid naive substring match pitfalls (use word boundaries).
+
+Free API rate limits are real — cache aggressively and batch queries.
+
+Start with a single asset until the pipeline works end-to-end.
+
+Use Postman or curl for each endpoint to keep debugging simple.
+
+Keep the UI minimal first (function > looks). Then polish.
+
+Quick acceptance checklist to finish MVP
+
+ Register/Login works (JWT)
+
+ Add asset & view asset list
+
+ Price fetcher updates prices
+
+ News fetcher stores headlines
+
+ Sentiment + toxicity + relevance saved per news item
+
+ Risk scoring function computes a risk score
+
+ Asset detail page displays chart, headlines, explanations
+
+ Whitepaper analyzer accepts upload/URL and returns scam score
+
+ Alerts trigger when thresholds crossed
+
+ Deployed backend + frontend (optional but recommended)
