@@ -76,3 +76,6 @@ Finnhub / Alpha Vantage — stock data
 CoinGecko API — crypto prices
 
 NewsAPI / GNews — financial headlines
+_______________________________________________________________
+uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
+-------------------------------------------
